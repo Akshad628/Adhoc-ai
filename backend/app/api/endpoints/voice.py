@@ -1,13 +1,15 @@
 import asyncio
 import logging
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.db.session import get_db
 from app.services.ai_engine import AIEngineService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.websocket("/stream")
-async def voice_stream_websocket(websocket: WebSocket):
+async def voice_stream_websocket(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
     """
     WebSocket endpoint handling real-time binary audio PCM streaming.
     Streams input chunks to Deepgram, forwards transcripts to Groq,
@@ -62,7 +64,7 @@ async def voice_stream_websocket(websocket: WebSocket):
                 await websocket.send_json({"event": "transcript", "text": transcript})
 
                 # Stream response from Groq
-                llm_stream = ai_engine.get_llm_stream(transcript)
+                llm_stream = ai_engine.get_llm_stream(transcript, db)
 
                 # Track generated words/phrases to accumulate the full prompt response
                 full_response = []

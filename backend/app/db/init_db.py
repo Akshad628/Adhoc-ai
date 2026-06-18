@@ -1,5 +1,6 @@
 from app.db.models import Base
 from app.db.session import engine
+from app.models.document import DocumentChunk
 
 async def init_models():
     async with engine.begin() as conn:

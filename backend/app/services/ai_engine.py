@@ -4,18 +4,30 @@ import base64
 import logging
 import math
 import struct
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, List, Any
 import websockets
 from groq import AsyncGroq  # type: ignore
+from sqlalchemy.future import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import settings
+from app.models.document import DocumentChunk
 
 logger = logging.getLogger(__name__)
 
-# GCET Grounding Persona - strictly matching user requirements
+# Fallback grounding GCET prompt
 GCET_SYSTEM_PROMPT = (
     "You are an elite, highly conversational admission assistant for Geethanjali College of Engineering and Technology (GCET). "
     "Ground answers in GCET facts. Keep responses concise, natural, and highly empathetic. Do not use markdown."
 )
+
+# Initialize SentenceTransformer globally to avoid reloading
+try:
+    from sentence_transformers import SentenceTransformer  # type: ignore
+    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+except Exception as e:
+    logger.error(f"Failed to load sentence-transformers model: {e}")
+    embedding_model = None
 
 def generate_mock_pcm_audio(duration_seconds: float = 3.0, sample_rate: int = 16000) -> bytes:
     """
@@ -36,14 +48,12 @@ async def sentence_clause_buffer(text_generator: AsyncGenerator[str, None]) -> A
     to ensure the downstream TTS receives coherent, naturally pronounced segments.
     """
     buffer = []
-    # Clause terminators
     terminators = {'.', ',', '?', '!', ';', ':', '\n'}
     
     async for chunk in text_generator:
         buffer.append(chunk)
         full_text = "".join(buffer)
         
-        # If any token matches a terminator, or if the accumulated text is long enough
         if any(term in chunk for term in terminators) or len(full_text) > 120:
             last_idx = -1
             for term in terminators:
@@ -73,6 +83,38 @@ class AIEngineService:
             self.groq_client = AsyncGroq(api_key=self.groq_api_key)
         else:
             self.groq_client = None
+
+    async def retrieve_context(self, db: AsyncSession, user_query: str) -> str:
+        """
+        Embeds the query and performs a pgvector cosine similarity search to retrieve context.
+        """
+        if not embedding_model:
+            logger.warning("Embedding model not loaded. Skipping context retrieval.")
+            return ""
+            
+        try:
+            # Generate embedding in executor to keep websocket non-blocking
+            loop = asyncio.get_event_loop()
+            query_vector = await loop.run_in_executor(
+                None, lambda: embedding_model.encode(user_query).tolist()
+            )
+            
+            # cosine_distance query search from pgvector
+            query = select(DocumentChunk).order_by(
+                DocumentChunk.embedding.cosine_distance(query_vector)
+            ).limit(3)
+            
+            result = await db.execute(query)
+            chunks = result.scalars().all()
+            
+            if not chunks:
+                return ""
+                
+            return "\n".join([f"- {c.content}" for c in chunks])
+            
+        except Exception as e:
+            logger.error(f"Failed to query context from pgvector: {e}")
+            return ""
 
     async def transcribe_stream(self, audio_generator: AsyncGenerator[bytes, None]) -> AsyncGenerator[str, None]:
         """
@@ -120,13 +162,27 @@ class AIEngineService:
             logger.error(f"Deepgram connection failed: {e}")
             yield "Hello, GCET admissions info please."
 
-    async def get_llm_stream(self, prompt: str) -> AsyncGenerator[str, None]:
+    async def get_llm_stream(self, prompt: str, db: Optional[AsyncSession] = None) -> AsyncGenerator[str, None]:
         """
         Queries Groq LLM with GCET persona and yields text tokens.
+        If db is provided, performs RAG context retrieval first.
         """
+        system_prompt = GCET_SYSTEM_PROMPT
+        
+        if db is not None:
+            context = await self.retrieve_context(db, prompt)
+            if context.strip():
+                system_prompt = (
+                    "You are the GCET Admission Agent. Answer the user's question using ONLY the following context. "
+                    "If the answer is not in the context, politely say you don't have that specific information. "
+                    f"Context: {context}."
+                )
+
         if not self.groq_client:
             logger.warning("Groq client not initialized. Yielding mock response.")
             mock_resp = "Geethanjali College of Engineering and Technology offers CSE, ECE, EEE, and Mechanical Engineering. Our CSE branch is highly sought after with specialization in AI and Machine Learning. Admissions are open under both Convener and Management quotas."
+            if db is not None and "Context:" in system_prompt:
+                mock_resp = f"According to the ingested GCET documents: {context[:150]}..."
             for word in mock_resp.split(" "):
                 yield word + " "
                 await asyncio.sleep(0.05)
@@ -136,7 +192,7 @@ class AIEngineService:
             completion = await self.groq_client.chat.completions.create(
                 model="llama3-70b-8192",
                 messages=[
-                    {"role": "system", "content": GCET_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
@@ -154,7 +210,6 @@ class AIEngineService:
         """
         Pipes LLM text outputs (after clause/sentence buffering) into ElevenLabs TTS WebSocket and yields raw synthesized audio bytes.
         """
-        # Buffer incoming raw words by sentence or clause before passing to TTS
         buffered_clause_generator = sentence_clause_buffer(text_generator)
 
         if not self.elevenlabs_api_key:
