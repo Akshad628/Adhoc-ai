@@ -1,0 +1,46 @@
+# Dependency Directories
+node_modules/
+backend/.venv/
+.venv/
+
+# Build Outputs
+dist/
+dist-ssr/
+build/
+out/
+
+# Python Cache & Coverage
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Environment Variables & Keys
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+
+# IDEs & Editors
+.vscode/settings.json
+.vscode/tasks.json
+.vscode/launch.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# System & OS Files
+.DS_Store
+Thumbs.db
+desktop.ini

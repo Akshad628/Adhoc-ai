@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", sans-serif;
+  --color-background: #050505;
+  --color-surface: #111111;
+  --color-panel: #181818;
+  --color-accent-primary: #FF7A18;
+  --color-accent-secondary: #5B8CFF;
+  --color-glass: rgba(255, 255, 255, 0.06);
+}
+
+body {
+  background-color: var(--color-background);
+  color: white;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background-color: var(--color-accent-primary);
+  color: white;
+}
